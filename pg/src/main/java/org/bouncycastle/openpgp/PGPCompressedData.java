@@ -18,6 +18,24 @@ import org.bouncycastle.bcpg.PacketTags;
 public class PGPCompressedData
     implements CompressionAlgorithmTags
 {
+    private static final boolean useJzLib;
+
+    static {
+
+        /* This static initializer checks if the user wants to use jzlib instead of zlib.
+           Throw an exception if the user wants jzlib but it isn't available on the classpath.
+         */
+        if (System.getProperty("org.bouncycastle.usejzlib").equalsIgnoreCase("true")) {
+            try {
+                Class.forName("com.jcraft.jzlib.InflaterInputStream", false, PGPCompressedData.class.getClassLoader());
+                useJzLib=true;
+            } catch (ClassNotFoundException e) {
+                throw new PGPRuntimeOperationException("Found useJZlib environment variable, but JZLib dependency is not present on classpath.",e);
+            }
+        } else {
+            useJzLib=false;
+        }
+    }
     CompressedDataPacket    data;
 
     /**
@@ -105,36 +123,40 @@ public class PGPCompressedData
       }
       if (this.getAlgorithm() == ZLIB)
       {
-          return new InflaterInputStream(this.getInputStream())
-          {
-              // If the "nowrap" inflater option is used the stream can
-              // apparently overread - we override fill() and provide
-              // an extra byte for the end of the input stream to get
-              // around this.
-              //
-              // Totally weird...
-              //
-              protected void fill() throws IOException
-              {
-                  if (eof)
-                  {
-                      throw new EOFException("Unexpected end of ZIP input stream");
-                  }
-
-                  len = this.in.read(buf, 0, buf.length);
-
-                  if (len == -1)
-                  {
-                      buf[0] = 0;
-                      len = 1;
-                      eof = true;
-                  }
-
-                  inf.setInput(buf, 0, len);
+          if (useJzLib) {
+              try {
+                  return new com.jcraft.jzlib.InflaterInputStream(this.getInputStream());
+              } catch (IOException e) {
+                  throw new PGPException("IO Exception while returning JZLib InflaterInputStream:", e);
               }
+          } else {
+              return new InflaterInputStream(this.getInputStream()) {
+                  // If the "nowrap" inflater option is used the stream can
+                  // apparently overread - we override fill() and provide
+                  // an extra byte for the end of the input stream to get
+                  // around this.
+                  //
+                  // Totally weird...
+                  //
+                  protected void fill() throws IOException {
+                      if (eof) {
+                          throw new EOFException("Unexpected end of ZIP input stream");
+                      }
 
-              private boolean eof = false;
-          };
+                      len = this.in.read(buf, 0, buf.length);
+
+                      if (len == -1) {
+                          buf[0] = 0;
+                          len = 1;
+                          eof = true;
+                      }
+
+                      inf.setInput(buf, 0, len);
+                  }
+
+                  private boolean eof = false;
+              };
+          }
       }
       if (this.getAlgorithm() == BZIP2)
       {
